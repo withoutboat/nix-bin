@@ -1,0 +1,10 @@
+[package]
+name = "vial-daemon"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vladimir Markov <withoutboat@gmail.com>"]
+description = "Lightweight background daemon for tracking active keyboard layers on Vial keyboards (W-Corne DH747)"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
