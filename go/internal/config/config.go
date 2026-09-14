@@ -17,10 +17,8 @@ type RepoEntry struct {
 
 // Project represents a named project containing repositories.
 type Project struct {
-	Name       string
-	ChartsRepo *RepoEntry
-	Repos      []RepoEntry
-	Aliases    map[string]string
+	Name  string
+	Repos []RepoEntry
 }
 
 // Config represents the loaded configuration of all projects.
@@ -120,64 +118,34 @@ func ParseConfig(data []byte) (*Config, error) {
 
 func parseProjectNode(projectName string, valNode *yaml.Node) (Project, error) {
 	proj := Project{
-		Name:    projectName,
-		Aliases: make(map[string]string),
+		Name: projectName,
 	}
 
 	switch valNode.Kind {
 	case yaml.SequenceNode:
-		repos, aliases, err := parseReposAndAliasesNode(valNode)
+		repos, err := parseReposNode(valNode)
 		if err != nil {
 			return proj, err
 		}
 		proj.Repos = repos
-		for k, v := range aliases {
-			proj.Aliases[k] = v
-		}
 
 	case yaml.MappingNode:
-		if isObjectProjectMapping(valNode) {
-			var chartsRepos []RepoEntry
-			var generalRepos []RepoEntry
-
-			for i := 0; i < len(valNode.Content); i += 2 {
-				key := strings.ToLower(strings.TrimSpace(valNode.Content[i].Value))
-				val := valNode.Content[i+1]
-
-				switch key {
-				case "aliases":
-					aliases, err := parseAliasesNode(val)
-					if err != nil {
-						return proj, fmt.Errorf("failed parsing aliases: %w", err)
-					}
-					for k, v := range aliases {
-						proj.Aliases[k] = v
-					}
-
-				case "charts", "chart":
-					repos, _, err := parseReposAndAliasesNode(val)
-					if err != nil {
-						return proj, fmt.Errorf("failed parsing charts: %w", err)
-					}
-					chartsRepos = append(chartsRepos, repos...)
-
-				case "repos", "repositories":
-					repos, aliases, err := parseReposAndAliasesNode(val)
-					if err != nil {
-						return proj, fmt.Errorf("failed parsing repos: %w", err)
-					}
-					for k, v := range aliases {
-						proj.Aliases[k] = v
-					}
-					generalRepos = append(generalRepos, repos...)
+		var repoList []RepoEntry
+		var isNestedRepos bool
+		for i := 0; i < len(valNode.Content); i += 2 {
+			k := strings.ToLower(strings.TrimSpace(valNode.Content[i].Value))
+			if k == "repos" || k == "repositories" {
+				r, err := parseReposNode(valNode.Content[i+1])
+				if err != nil {
+					return proj, err
 				}
+				repoList = append(repoList, r...)
+				isNestedRepos = true
 			}
-			if len(chartsRepos) > 0 {
-				proj.ChartsRepo = &chartsRepos[0]
-			}
-			proj.Repos = generalRepos
+		}
+		if isNestedRepos {
+			proj.Repos = repoList
 		} else {
-			// Old-style mapping of repoName: repoURL
 			repos, err := parseReposNode(valNode)
 			if err != nil {
 				return proj, err
@@ -196,97 +164,10 @@ func parseProjectNode(projectName string, valNode *yaml.Node) (Project, error) {
 		return proj, fmt.Errorf("unexpected project node kind: %d", valNode.Kind)
 	}
 
-	if proj.ChartsRepo == nil && len(proj.Aliases) > 0 && len(proj.Repos) > 0 {
-		charts := proj.Repos[0]
-		proj.ChartsRepo = &charts
-		proj.Repos = proj.Repos[1:]
-	}
-
 	return proj, nil
 }
 
-func isObjectProjectMapping(node *yaml.Node) bool {
-	if node.Kind != yaml.MappingNode {
-		return false
-	}
-	for i := 0; i < len(node.Content); i += 2 {
-		k := strings.ToLower(strings.TrimSpace(node.Content[i].Value))
-		if k == "aliases" || k == "charts" || k == "chart" || k == "repos" || k == "repositories" {
-			return true
-		}
-	}
-	return false
-}
-
-func parseAliasesNode(node *yaml.Node) (map[string]string, error) {
-	aliases := make(map[string]string)
-	if node == nil || (node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == "" || node.Value == "~")) {
-		return aliases, nil
-	}
-
-	if node.Kind == yaml.ScalarNode {
-		// Encrypted multiline/JSON string: unmarshal as YAML or parse key: value lines
-		var subMap map[string]string
-		if err := yaml.Unmarshal([]byte(node.Value), &subMap); err == nil && len(subMap) > 0 {
-			return subMap, nil
-		}
-		lines := strings.Split(node.Value, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			var k, v string
-			if idx := strings.Index(line, ":"); idx != -1 {
-				k = strings.TrimSpace(line[:idx])
-				v = strings.TrimSpace(line[idx+1:])
-			} else if idx := strings.Index(line, "="); idx != -1 {
-				k = strings.TrimSpace(line[:idx])
-				v = strings.TrimSpace(line[idx+1:])
-			}
-			if k != "" && v != "" {
-				aliases[k] = v
-			}
-		}
-		return aliases, nil
-	}
-
-	if node.Kind == yaml.SequenceNode {
-		// List of strings: ["key: value", "key=value", ...]
-		for _, elem := range node.Content {
-			if elem.Kind == yaml.ScalarNode {
-				val := strings.TrimSpace(elem.Value)
-				var k, v string
-				if idx := strings.Index(val, ":"); idx != -1 {
-					k = strings.TrimSpace(val[:idx])
-					v = strings.TrimSpace(val[idx+1:])
-				} else if idx := strings.Index(val, "="); idx != -1 {
-					k = strings.TrimSpace(val[:idx])
-					v = strings.TrimSpace(val[idx+1:])
-				}
-				if k != "" && v != "" {
-					aliases[k] = v
-				}
-			}
-		}
-		return aliases, nil
-	}
-
-	if node.Kind == yaml.MappingNode {
-		for i := 0; i < len(node.Content); i += 2 {
-			k := strings.TrimSpace(node.Content[i].Value)
-			v := strings.TrimSpace(node.Content[i+1].Value)
-			if k != "" && v != "" {
-				aliases[k] = v
-			}
-		}
-		return aliases, nil
-	}
-
-	return aliases, nil
-}
-
-func isAliasesMappingNode(node *yaml.Node) bool {
+func isAliasesNode(node *yaml.Node) bool {
 	if node.Kind != yaml.MappingNode {
 		return false
 	}
@@ -298,48 +179,34 @@ func isAliasesMappingNode(node *yaml.Node) bool {
 	return false
 }
 
-func extractAliasesFromMappingNode(node *yaml.Node) (map[string]string, error) {
-	for i := 0; i < len(node.Content); i += 2 {
-		if strings.EqualFold(node.Content[i].Value, "aliases") {
-			return parseAliasesNode(node.Content[i+1])
-		}
-	}
-	return nil, nil
-}
-
-func parseReposAndAliasesNode(node *yaml.Node) ([]RepoEntry, map[string]string, error) {
+func parseReposNode(node *yaml.Node) ([]RepoEntry, error) {
 	var repos []RepoEntry
-	aliases := make(map[string]string)
 
 	switch node.Kind {
 	case yaml.SequenceNode:
 		for _, elem := range node.Content {
-			if elem.Kind == yaml.MappingNode && isAliasesMappingNode(elem) {
-				extracted, err := extractAliasesFromMappingNode(elem)
-				if err != nil {
-					return nil, nil, err
-				}
-				for k, v := range extracted {
-					aliases[k] = v
-				}
+			if isAliasesNode(elem) {
 				continue
 			}
 			repo, err := parseSingleRepoNode(elem)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			repos = append(repos, repo)
 		}
 	case yaml.ScalarNode:
 		repo, err := parseSingleRepoNode(node)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		repos = append(repos, repo)
 	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			name := node.Content[i].Value
 			val := node.Content[i+1]
+			if strings.EqualFold(name, "aliases") {
+				continue
+			}
 			if val.Kind == yaml.ScalarNode {
 				repos = append(repos, RepoEntry{
 					Name: name,
@@ -349,12 +216,7 @@ func parseReposAndAliasesNode(node *yaml.Node) ([]RepoEntry, map[string]string, 
 		}
 	}
 
-	return repos, aliases, nil
-}
-
-func parseReposNode(node *yaml.Node) ([]RepoEntry, error) {
-	repos, _, err := parseReposAndAliasesNode(node)
-	return repos, err
+	return repos, nil
 }
 
 func parseSingleRepoNode(node *yaml.Node) (RepoEntry, error) {

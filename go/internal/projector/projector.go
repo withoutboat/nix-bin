@@ -8,7 +8,6 @@ import (
 
 	"github.com/withoutboat/nix-bin/projector/internal/config"
 	"github.com/withoutboat/nix-bin/projector/internal/git"
-	"github.com/withoutboat/nix-bin/projector/internal/helm"
 )
 
 // Options holds runtime options for Projector.
@@ -89,17 +88,9 @@ func (p *Projector) processProject(proj config.Project) error {
 		}
 	}
 
-	if proj.ChartsRepo != nil || len(proj.Aliases) > 0 {
-		return p.processChartsProject(proj, baseDir)
-	}
-
-	return p.processStandardProject(proj, baseDir)
-}
-
-func (p *Projector) processStandardProject(proj config.Project, baseDir string) error {
 	for _, repo := range proj.Repos {
 		targetDir := filepath.Join(baseDir, repo.Name)
-		if err := p.syncStandardRepo(repo.URL, targetDir); err != nil {
+		if err := p.syncRepo(repo.URL, targetDir); err != nil {
 			fmt.Printf("Error syncing %s: %v\n", repo.Name, err)
 			if !p.opts.ContinueErrors {
 				return err
@@ -109,7 +100,7 @@ func (p *Projector) processStandardProject(proj config.Project, baseDir string) 
 	return nil
 }
 
-func (p *Projector) syncStandardRepo(repoURL, targetDir string) error {
+func (p *Projector) syncRepo(repoURL, targetDir string) error {
 	if !git.DirExists(targetDir) {
 		fmt.Printf("Cloning %s into %s...\n", repoURL, targetDir)
 		return p.git.Clone(repoURL, targetDir)
@@ -117,130 +108,4 @@ func (p *Projector) syncStandardRepo(repoURL, targetDir string) error {
 
 	fmt.Printf("Updating %s in %s...\n", repoURL, targetDir)
 	return p.git.Pull(targetDir)
-}
-
-func (p *Projector) processChartsProject(proj config.Project, baseDir string) error {
-	var chartsRepo config.RepoEntry
-	var customRepos []config.RepoEntry
-
-	if proj.ChartsRepo != nil {
-		chartsRepo = *proj.ChartsRepo
-		customRepos = proj.Repos
-	} else if len(proj.Repos) > 0 {
-		chartsRepo = proj.Repos[0]
-		customRepos = proj.Repos[1:]
-	} else {
-		return nil
-	}
-
-	chartsTargetDir := filepath.Join(baseDir, chartsRepo.Name)
-	fmt.Printf("Processing charts repository: %s\n", chartsRepo.Name)
-
-	if err := p.syncStandardRepo(chartsRepo.URL, chartsTargetDir); err != nil {
-		fmt.Printf("Error syncing charts repo %s: %v\n", chartsRepo.Name, err)
-		if !p.opts.ContinueErrors {
-			return err
-		}
-	}
-
-	org := extractOrgFromURL(chartsRepo.URL, "")
-
-	if git.DirExists(chartsTargetDir) || p.opts.DryRun {
-		discovered, err := helm.FindDiscoveredReposInDir(chartsTargetDir, org, proj.Aliases)
-		if err != nil {
-			fmt.Printf("Warning: error scanning helm charts in %s: %v\n", chartsTargetDir, err)
-		} else {
-			fmt.Printf("Discovered %d GitHub service repositories in charts\n", len(discovered))
-			for _, d := range discovered {
-				target := filepath.Join(baseDir, d.RepoName)
-				if err := p.syncChartsServiceRepo(d, target); err != nil {
-					fmt.Printf("Error syncing service repo %s: %v\n", d.RepoName, err)
-					if !p.opts.ContinueErrors {
-						return err
-					}
-				}
-			}
-		}
-	}
-
-	if len(customRepos) > 0 {
-		fmt.Printf("Processing %d custom repositories in project...\n", len(customRepos))
-		for _, customRepo := range customRepos {
-			targetDir := filepath.Join(baseDir, customRepo.Name)
-			if err := p.syncStandardRepo(customRepo.URL, targetDir); err != nil {
-				fmt.Printf("Error syncing custom repo %s: %v\n", customRepo.Name, err)
-				if !p.opts.ContinueErrors {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-func (p *Projector) syncChartsServiceRepo(d helm.DiscoveredRepo, targetDir string) error {
-	if !git.DirExists(targetDir) {
-		fmt.Printf("Cloning service repo %s (%s) into %s...\n", d.RepoName, d.URL, targetDir)
-		if err := p.git.Clone(d.URL, targetDir); err != nil {
-			return err
-		}
-
-		if d.BranchOrTag != "" {
-			remotes, err := p.git.ListRemoteBranches(targetDir)
-			if err != nil {
-				// Fallback to checking out tag/branch directly
-				fmt.Printf("Checking out branch/tag %s in %s...\n", d.BranchOrTag, targetDir)
-				return p.git.Checkout(targetDir, d.BranchOrTag)
-			}
-			branch := git.ResolveBranch(d.BranchOrTag, remotes)
-			fmt.Printf("Checking out resolved branch %s (from tag %s) in %s...\n", branch, d.BranchOrTag, targetDir)
-			return p.git.Checkout(targetDir, branch)
-		}
-		return nil
-	}
-
-	fmt.Printf("Updating service repo %s in %s...\n", d.RepoName, targetDir)
-	if err := p.git.Fetch(targetDir); err != nil {
-		return err
-	}
-
-	if d.BranchOrTag != "" {
-		remotes, err := p.git.ListRemoteBranches(targetDir)
-		if err != nil {
-			fmt.Printf("Checking out and pulling branch/tag %s in %s...\n", d.BranchOrTag, targetDir)
-			return p.git.PullBranch(targetDir, d.BranchOrTag)
-		}
-		branch := git.ResolveBranch(d.BranchOrTag, remotes)
-		fmt.Printf("Checking out and pulling resolved branch %s (from tag %s) in %s...\n", branch, d.BranchOrTag, targetDir)
-		return p.git.PullBranch(targetDir, branch)
-	}
-
-	return p.git.Pull(targetDir)
-}
-
-func extractOrgFromURL(rawURL, fallback string) string {
-	u := strings.TrimSpace(rawURL)
-	u = strings.TrimSuffix(u, ".git")
-
-	// e.g. git@github.com:owner/repo
-	if colonIdx := strings.LastIndex(u, ":"); colonIdx != -1 {
-		path := u[colonIdx+1:]
-		parts := strings.Split(path, "/")
-		if len(parts) >= 2 && parts[0] != "" {
-			return parts[0]
-		}
-	}
-
-	// e.g. https://github.com/owner/repo
-	if strings.Contains(u, "://") {
-		idx := strings.Index(u, "://")
-		path := u[idx+3:]
-		parts := strings.Split(path, "/")
-		if len(parts) >= 3 && parts[1] != "" {
-			return parts[1]
-		}
-	}
-
-	return fallback
 }
