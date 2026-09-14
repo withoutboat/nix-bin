@@ -76,9 +76,6 @@ A Go CLI utility for orchestrating and synchronizing workspace git repositories 
 
 - **Project Workspaces**: Maps projects (e.g. `work`, `nix`, `personal`) to `$HOME/<project_name>/<repo_name>`.
 - **Flexible Configuration**: Supports list-of-mappings and dictionary formats, custom repo names, and environment variable/path autodetection.
-- **Helm Charts Workflow**:
-  - Optionally specify a charts repository and aliases to discover service repositories from deployment images.
-  - Automatically clones/pulls service repositories and checks out matching branches/tags.
 - **Dynamic Project Roots (Zellij Sessionizer Integration)**:
   - Automatically records all project root paths into `$HOME/.config/projector/roots` upon synchronization.
   - Command `projector roots` (or `--roots`) outputs project roots to stdout, allowing sessionizers like `zellij-sessionizer` to query roots dynamically without hardcoding.
